@@ -1,0 +1,149 @@
+// ========= CONFIG =========
+const API_BASE = "PUT_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE/exec";
+
+// ========= HELPERS =========
+const $ = (s)=>document.querySelector(s);
+function fmt(dtInput){
+  if(!dtInput) return "";
+  const d = (dtInput instanceof Date) ? dtInput : new Date(dtInput);
+  const pad=(n)=> String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function qs(o){ return new URLSearchParams(o).toString(); }
+async function fetchJSON(url){ const r = await fetch(url); return r.json(); }
+async function postForm(params){
+  const fd = new FormData(); Object.entries(params).forEach(([k,v])=>fd.append(k,v));
+  const r = await fetch(API_BASE, {method:'POST', body:fd}); return r.json();
+}
+
+// ========= INSTALL (PWA Prompt) =========
+let deferredPrompt=null;
+window.addEventListener('beforeinstallprompt', (e)=>{
+  e.preventDefault(); deferredPrompt=e; $('#btnInstall').style.display='inline-block';
+});
+$('#btnInstall').onclick= async ()=>{
+  if(!deferredPrompt) return;
+  deferredPrompt.prompt(); deferredPrompt=null; $('#btnInstall').style.display='none';
+};
+
+// ========= TABS =========
+document.querySelectorAll('.tab').forEach(t=>{
+  t.onclick=()=>{
+    document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+    t.classList.add('active');
+    const tab = t.getAttribute('data-tab');
+    $('#tab-emp').style.display = (tab==='emp'?'block':'none');
+    $('#tab-mgr').style.display = (tab==='mgr'?'block':'none');
+  };
+});
+
+// ========= PROFILE =========
+async function loadProfile(){
+  const email = ($('#email').value||'').trim().toLowerCase();
+  if(!email) { $('#who').textContent=''; return; }
+  try{
+    const js = await fetchJSON(`${API_BASE}?fn=getProfile&${qs({email})}`);
+    if(js.ok && js.profile?.exists){
+      $('#who').textContent = `مرحبًا ${js.profile.name} — الدور: ${js.profile.role}`;
+      if(!$('#managerEmail').value && js.profile.managerEmail){
+        $('#managerEmail').value = js.profile.managerEmail;
+      }
+      if(js.profile.role && /manager|admin/i.test(js.profile.role)){
+        $('#mgrEmail').value = js.profile.email;
+      }
+      localStorage.setItem('hr_email', email);
+    } else {
+      $('#who').textContent = 'المستخدم غير موجود في Employees';
+    }
+  }catch(e){ $('#who').textContent = 'خطأ أثناء جلب البروفايل'; }
+}
+
+// ========= EMPLOYEE =========
+async function sendRequest(){
+  const empEmail = ($('#email').value||'').trim().toLowerCase();
+  const empName  = '';
+  const type     = $('#type').value;
+  const from     = $('#from').value ? fmt(new Date($('#from').value)) : '';
+  const to       = $('#to').value   ? fmt(new Date($('#to').value))   : '';
+  const reason   = $('#reason').value || '';
+  const managerEmail = ($('#managerEmail').value||'').trim().toLowerCase();
+
+  if(!empEmail) return alert('اكتب إيميلك أولًا');
+  if(!type)     return alert('اختر نوع الطلب');
+
+  $('#empStatus').textContent = 'جارِ الإرسال…';
+  try{
+    const res = await postForm({ fn:'createRequest', empName, empEmail, type, from, to, reason, managerEmail });
+    if(res.ok){
+      $('#empStatus').textContent = 'تم إرسال الطلب: ' + res.id;
+      $('#reason').value=''; $('#from').value=''; $('#to').value='';
+      loadMine();
+    } else {
+      $('#empStatus').textContent = 'فشل الإرسال: ' + (res.error||'');
+      alert(res.error||'فشل الإرسال');
+    }
+  }catch(e){ $('#empStatus').textContent = 'فشل الشبكة'; }
+}
+async function loadMine(){
+  const email = ($('#email').value||'').trim().toLowerCase();
+  if(!email){ $('#mine').innerHTML='—'; return; }
+  try{
+    const js = await fetchJSON(`${API_BASE}?fn=listMyRequests&${qs({email})}`);
+    const box = $('#mine');
+    if(!js.ok || !Array.isArray(js.items) || !js.items.length){
+      box.innerHTML = '<i class="muted">لا توجد طلبات</i>'; return;
+    }
+    box.innerHTML = js.items.map(r=>{
+      const cls = /approved/i.test(r.Status) ? 'ok' : (/rejected/i.test(r.Status)? 'bad' : 'warn');
+      return `<div class="item">
+        <div><b>${r.ID}</b> — ${r.Type} <span class="pill ${cls}">${r.Status}</span></div>
+        <div class="muted">${r.From||''} → ${r.To||''}</div>
+        <div class="muted">السبب: ${r.Reason||''}</div>
+      </div>`;
+    }).join('');
+  }catch(e){ $('#mine').innerHTML = '<i class="muted">تعذر التحميل</i>'; }
+}
+
+// ========= MANAGER =========
+async function loadMgr(){
+  const email = ($('#mgrEmail').value||'').trim().toLowerCase();
+  const onlyPending = $('#onlyPending').checked ? 'true' : 'false';
+  if(!email) return alert('اكتب إيميل المدير');
+
+  const js = await fetchJSON(`${API_BASE}?fn=listForManager&${qs({email, onlyPending})}`);
+  const items = js.items || js;
+  $('#mgrCounts').textContent = `الطلبات: ${Array.isArray(items)? items.length : 0}`;
+  const box = $('#mgrList');
+  if(!Array.isArray(items) || !items.length){
+    box.innerHTML = '<i class="muted">لا توجد طلبات مطابقة</i>'; return;
+  }
+  box.innerHTML = items.map(r=>`
+    <div class="item">
+      <div><b>${r.ID}</b> — ${r.Type} <span class="pill warn">${r.Status}</span></div>
+      <div class="muted">${r.EmpName} (${r.EmpEmail})</div>
+      <div class="muted">${r.From||''} → ${r.To||''}</div>
+      <div class="muted">السبب: ${r.Reason||''}</div>
+      <div class="row" style="margin-top:8px">
+        <button onclick="act('${r.ID}','Approved')">موافقة</button>
+        <button onclick="act('${r.ID}','Rejected')">رفض</button>
+      </div>
+    </div>
+  `).join('');
+}
+async function act(id, status){
+  const actorEmail = ($('#mgrEmail').value||'').trim().toLowerCase();
+  if(!actorEmail) return alert('اكتب إيميل المدير');
+  const res = await postForm({ fn:'setStatus', id, status, actorEmail });
+  if(!res.ok){ alert(res.error||'فشل التحديث'); return; }
+  alert('تم التحديث إلى: ' + status);
+  loadMgr();
+}
+
+// ========= EVENTS =========
+$('#btnSaveEmail').onclick = ()=> loadProfile().then(loadMine);
+$('#btnSend').onclick       = sendRequest;
+$('#btnRefreshMine').onclick= loadMine;
+$('#btnLoadMgr').onclick    = loadMgr;
+
+const saved = localStorage.getItem('hr_email');
+if(saved){ $('#email').value = saved; loadProfile().then(loadMine); }
