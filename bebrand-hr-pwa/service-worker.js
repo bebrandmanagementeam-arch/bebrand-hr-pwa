@@ -1,5 +1,5 @@
 const CACHE = 'bebrand-hr-v1';
-const ASSETS = ['./','./index.html','./app.js','./manifest.json'];
+const ASSETS = ['./','./index.html','./app.js','./manifest.json','./niche-awards.html'];
 
 self.addEventListener('install', (e)=>{
   e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)));
